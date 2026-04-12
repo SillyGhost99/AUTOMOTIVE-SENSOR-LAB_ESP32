@@ -1,0 +1,243 @@
+#the following code is simulation based code which i did in on 'wokwi'
+#the 'Hardware' version of code is on another file
+#this is a prototype compared to the actual project i'm working on.
+
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+#include <math.h>
+
+// ============================================================
+// BIKBLACKBOX v2.0 — Motorsport Data Acquisition System
+// Sensors: MPU6050 (IMU) + DHT22 (Temp) + OLED Display
+// Output: CSV Serial Stream → Python Dashboard → ML Pipeline
+// ============================================================
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define DHTPIN 4
+#define DHTTYPE DHT22
+#define SAMPLE_RATE_MS 100  // 10Hz sampling — motorsport standard
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+Adafruit_MPU6050 mpu;
+DHT dht(DHTPIN, DHTTYPE);
+
+// Session tracking
+unsigned long sessionStart;
+unsigned long lastSample;
+unsigned long sampleCount = 0;
+
+// Peak values
+float peakGforce = 0;
+float peakAX = 0, peakAY = 0, peakAZ = 0;
+float minTemp = 999, maxTemp = -999;
+
+// OLED screen cycling
+int currentScreen = 0;
+unsigned long lastScreenSwitch = 0;
+#define SCREEN_INTERVAL 2000
+
+// Event detection thresholds
+#define HARD_BRAKE_THRESHOLD   1.8
+#define HARD_ACCEL_THRESHOLD   1.5
+#define CORNERING_THRESHOLD    1.2
+#define POTHOLE_THRESHOLD      2.5
+#define VIBRATION_THRESHOLD    0.3
+
+// Rolling average for vibration
+float axHistory[10] = {0};
+int histIndex = 0;
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  dht.begin();
+
+  // OLED init
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("ERROR: OLED not found");
+    while (true);
+  }
+
+  // MPU6050 init
+  if (!mpu.begin()) {
+    Serial.println("ERROR: MPU6050 not found");
+    while (true);
+  }
+
+  // MPU6050 config — motorsport settings
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);   // ±8G range
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);         // ±500°/s
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);      // Low pass filter
+
+  sessionStart = millis();
+  lastSample = millis();
+
+  // Boot screen
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+  display.setTextSize(2);
+  display.setCursor(10, 10);
+  display.println("BIKE");
+  display.setCursor(10, 30);
+  display.println("BLACKBOX");
+  display.setTextSize(1);
+  display.setCursor(20, 52);
+  display.println("Motorsport DAQ v2.0");
+  display.display();
+  delay(2000);
+
+  // CSV Header
+  Serial.println("timestamp_ms,session_s,temp_c,humidity_pct,imu_temp_c,"
+                 "ax,ay,az,gx,gy,gz,"
+                 "gforce,lean_angle,pitch_angle,"
+                 "vibration,event,peak_gforce");
+}
+
+void loop() {
+  if (millis() - lastSample < SAMPLE_RATE_MS) return;
+  lastSample = millis();
+  sampleCount++;
+
+  // ── Read sensors ──────────────────────────────────────────
+
+  float temp     = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  sensors_event_t a, g, t;
+  mpu.getEvent(&a, &g, &t);
+
+  float ax = a.acceleration.x;  // m/s²
+  float ay = a.acceleration.y;
+  float az = a.acceleration.z;
+  float gx = g.gyro.x;          // rad/s
+  float gy = g.gyro.y;
+  float gz = g.gyro.z;
+  float imuTemp = t.temperature;
+
+  // ── Calculations ──────────────────────────────────────────
+
+  // Total G-force
+  float gforce = sqrt(ax*ax + ay*ay + az*az) / 9.81;
+
+  // Lateral G (cornering)
+  float lateralG = ay / 9.81;
+
+  // Longitudinal G (braking/acceleration)
+  float longG = ax / 9.81;
+
+  // Lean angle (degrees) — bike tilt
+  float leanAngle = atan2(ay, az) * 180.0 / PI;
+
+  // Pitch angle (degrees) — braking/acceleration nose dive
+  float pitchAngle = atan2(-ax, sqrt(ay*ay + az*az)) * 180.0 / PI;
+
+  // Vibration RMS (rolling average of AX deviation)
+  axHistory[histIndex] = ax;
+  histIndex = (histIndex + 1) % 10;
+  float axMean = 0;
+  for (int i = 0; i < 10; i++) axMean += axHistory[i];
+  axMean /= 10;
+  float vibration = abs(ax - axMean);
+
+  // Session time
+  float sessionSec = (millis() - sessionStart) / 1000.0;
+
+  // ── Event Detection ───────────────────────────────────────
+
+  String event = "NORMAL";
+  if (vibration > POTHOLE_THRESHOLD)          event = "POTHOLE";
+  else if (longG < -HARD_BRAKE_THRESHOLD)     event = "HARD_BRAKE";
+  else if (longG > HARD_ACCEL_THRESHOLD)      event = "HARD_ACCEL";
+  else if (abs(lateralG) > CORNERING_THRESHOLD) event = "CORNERING";
+  else if (vibration > VIBRATION_THRESHOLD)   event = "VIBRATION";
+
+  // ── Peak tracking ─────────────────────────────────────────
+
+  if (gforce > peakGforce) peakGforce = gforce;
+  if (abs(ax) > abs(peakAX)) peakAX = ax;
+  if (abs(ay) > abs(peakAY)) peakAY = ay;
+  if (abs(az) > abs(peakAZ)) peakAZ = az;
+  if (!isnan(temp)) {
+    if (temp < minTemp) minTemp = temp;
+    if (temp > maxTemp) maxTemp = temp;
+  }
+
+  // ── CSV Serial Output ─────────────────────────────────────
+
+  Serial.print(millis());        Serial.print(",");
+  Serial.print(sessionSec, 1);   Serial.print(",");
+  Serial.print(temp, 2);         Serial.print(",");
+  Serial.print(humidity, 2);     Serial.print(",");
+  Serial.print(imuTemp, 2);      Serial.print(",");
+  Serial.print(ax, 4);           Serial.print(",");
+  Serial.print(ay, 4);           Serial.print(",");
+  Serial.print(az, 4);           Serial.print(",");
+  Serial.print(gx, 4);           Serial.print(",");
+  Serial.print(gy, 4);           Serial.print(",");
+  Serial.print(gz, 4);           Serial.print(",");
+  Serial.print(gforce, 4);       Serial.print(",");
+  Serial.print(leanAngle, 2);    Serial.print(",");
+  Serial.print(pitchAngle, 2);   Serial.print(",");
+  Serial.print(vibration, 4);    Serial.print(",");
+  Serial.print(event);           Serial.print(",");
+  Serial.println(peakGforce, 4);
+
+  // ── OLED Display (cycles every 2 seconds) ─────────────────
+
+  if (millis() - lastScreenSwitch > SCREEN_INTERVAL) {
+    currentScreen = (currentScreen + 1) % 4;
+    lastScreenSwitch = millis();
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+
+  switch (currentScreen) {
+
+    case 0: // G-Force screen
+      display.setCursor(0, 0);
+      display.println("── G-FORCE ─────────");
+      display.print("Total:  "); display.print(gforce, 2); display.println("G");
+      display.print("Long:   "); display.print(longG, 2);  display.println("G");
+      display.print("Lat:    "); display.print(lateralG, 2); display.println("G");
+      display.print("Peak:   "); display.print(peakGforce, 2); display.println("G");
+      break;
+
+    case 1: // Orientation screen
+      display.setCursor(0, 0);
+      display.println("── ORIENTATION ─────");
+      display.print("Lean:  "); display.print(leanAngle, 1); display.println(" deg");
+      display.print("Pitch: "); display.print(pitchAngle, 1); display.println(" deg");
+      display.print("GX: "); display.print(gx, 2);
+      display.print(" GY: "); display.println(gy, 2);
+      display.print("GZ: "); display.println(gz, 2);
+      break;
+
+    case 2: // Environment screen
+      display.setCursor(0, 0);
+      display.println("── ENVIRONMENT ─────");
+      display.print("Temp:  "); display.print(temp, 1); display.println(" C");
+      display.print("Humid: "); display.print(humidity, 1); display.println(" %");
+      display.print("IMU T: "); display.print(imuTemp, 1); display.println(" C");
+      display.print("Vib:   "); display.println(vibration, 3);
+      break;
+
+    case 3: // Session screen
+      display.setCursor(0, 0);
+      display.println("── SESSION ─────────");
+      display.print("Time:  "); display.print(sessionSec, 0); display.println(" s");
+      display.print("Samples: "); display.println(sampleCount);
+      display.print("Event: "); display.println(event);
+      display.print("PeakG: "); display.print(peakGforce, 2); display.println("G");
+      break;
+  }
+
+  display.display();
+}
