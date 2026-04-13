@@ -1,5 +1,5 @@
 #the following code is simulation based code which i did in on 'wokwi'
-#the 'Hardware' version of code is on another file
+#the 'Hardware' version of code is on another file (soon)
 #this is a prototype compared to the actual project i'm working on.
 
 #include <Wire.h>
