@@ -1,3 +1,5 @@
+//blink test for ESP32
+
 #include <Arduino.h>
 
 #define LED_PIN 2  // Built-in LED on ESP32 DevKit V1 is GPIO 2
