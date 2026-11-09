@@ -1,5 +1,5 @@
 MotoDAQ
-Motorsport Data Acquisition System 🧭
+Motorsport Data Acquisition System (Transponder)
 
 MotoDAQ is a real-time riding data logger built on the ESP32. It mounts on a bike and captures acceleration, G-forces, lean angle, vibration, and temperature while you ride — streaming live telemetry to a Python dashboard and feeding an ML pipeline that classifies driver behaviour from self-collected data.
 Inspired by professional systems like the AiM MXS Strada and MoTeC M1 logger. Built for a fraction of the cost using off-the-shelf hardware.
